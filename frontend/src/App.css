@@ -1,8 +1,65 @@
 #root {
-  max-width: 1280px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.nac-container {
+  padding: 32px;
+  font-family: system-ui;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+}
+
+.nac-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin-top: 16px;
+  font-size: 0.95rem;
+}
+
+.nac-table th {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.nac-table th,
+.nac-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #2f2f2f;
+  text-align: left;
+}
+
+.nac-table th:nth-child(1),
+.nac-table td:nth-child(1) { width: 110px; }
+
+.nac-table th:nth-child(2),
+.nac-table td:nth-child(2) { width: 220px; }
+
+.nac-table th:nth-child(3),
+.nac-table td:nth-child(3) { width: 180px; }
+
+.nac-table th:nth-child(4),
+.nac-table td:nth-child(4) { width: 260px; }
+
+.nac-table th:nth-child(5),
+.nac-table td:nth-child(5) { width: 140px; }
+
+.nac-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nac-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 1100px;
 }
 
 .logo {
