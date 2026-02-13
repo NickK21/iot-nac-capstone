@@ -1,7 +1,7 @@
-# IoT NAC Prototype — Design Outline
+# IoT NAC — Design Outline
 
 ## Goal
-Build a small-scale Network Access Control prototype for IoT environments:
+Build a small-scale Network Access Control for IoT environments:
 - Discover devices on a local LAN
 - Identify devices with privacy-preserving IDs
 - Allow/deny devices from a dashboard
@@ -37,7 +37,7 @@ React Dashboard -> NestJS API -> (Discovery + Policy) -> SQLite
 - Deny -> record an enforcement event + show status in UI
 - Proves lifecycle without requiring root privileges
 
-### Phase 2: firewall proof-of-concept (if feasible)
+### Phase 2: firewall proof-of-concept 
 - Apply iptables/nftables rules on host to block a denied device
 - Safety:
   - explicit opt-in config
