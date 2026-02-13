@@ -7,11 +7,9 @@ Build a small-scale Network Access Control prototype for IoT environments:
 - Allow/deny devices from a dashboard
 - Enforce policy as a proof-of-concept
 
-## Non-goals
-Enterprise NAC, DPI, OAuth/SSO, cloud deployment, Kubernetes, SIEM, ML.
 
 ## Architecture (MVP)
-React Dashboard -> NestJS API -> (Discovery + Policy) -> SQLite (later)
+React Dashboard -> NestJS API -> (Discovery + Policy) -> SQLite 
 
 ## Network Discovery Plan
 ### Phase 1: ARP/Neighbor discovery (local)
@@ -49,7 +47,7 @@ React Dashboard -> NestJS API -> (Discovery + Policy) -> SQLite (later)
 ## Risks/Constraints
 - Real firewall manipulation may require root and is OS-dependent
 - Docker networking may require host networking for discovery/enforcement
-- Vendor detection is best-effort (OUI database coverage varies)
+- Vendor detection is best-effort 
 
 ## Demo flow target
 1. Run scan
