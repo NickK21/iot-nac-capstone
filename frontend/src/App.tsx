@@ -11,10 +11,21 @@ type Device = {
   state: DeviceState;
 };
 
+type AuditAction = "allow" | "deny";
+
+type AuditEntry = {
+  ts: string;
+  deviceId: string;
+  action: AuditAction;
+  prev: DeviceState;
+  next: DeviceState;
+};
+
 export default function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
 
   async function loadDevices() {
     try {
@@ -26,11 +37,19 @@ export default function App() {
 
       const data = (await res.json()) as Device[];
       setDevices(data);
+      loadAudit().catch(() => {});
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load devices");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadAudit() {
+    const res = await fetch("http://localhost:3000/audit");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as AuditEntry[];
+    setAudit(data);
   }
 
   async function setDeviceState(id: string, next: "allow" | "deny") {
@@ -76,8 +95,27 @@ export default function App() {
                   <td>{d.state}</td>
                   <td>
                     <div className="nac-actions">
-                      <button onClick={() => setDeviceState(d.id, "allow")}>Allow</button>
-                      <button onClick={() => setDeviceState(d.id, "deny")}>Deny</button>
+                      <button
+                        onClick={() => setDeviceState(d.id, "allow")}
+                        disabled={d.state === "allowed"}
+                        style={{
+                          backgroundColor: d.state === "allowed" ? "#2e7d32" : undefined,
+                          borderColor: d.state === "allowed" ? "#2e7d32" : undefined,
+                        }}
+                      >
+                        Allow
+                      </button>
+
+                      <button
+                        onClick={() => setDeviceState(d.id, "deny")}
+                        disabled={d.state === "denied"}
+                        style={{
+                          backgroundColor: d.state === "denied" ? "#c62828" : undefined,
+                          borderColor: d.state === "denied" ? "#c62828" : undefined,
+                        }}
+                      >
+                        Deny
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -85,6 +123,21 @@ export default function App() {
             </tbody>
           </table>
         )}
+        <div style={{ marginTop: 16 }}>
+          <h2 style={{ margin: "8px 0", fontSize: "1.1rem" }}>Audit</h2>
+          {audit.length === 0 ? (
+            <div style={{ color: "rgba(255,255,255,0.6)" }}>No policy changes yet.</div>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {audit.slice(-10).reverse().map((e, idx) => (
+                <li key={`${e.ts}-${idx}`} style={{ marginBottom: 6 }}>
+                  <span style={{ color: "rgba(255,255,255,0.7)" }}>{e.ts}</span>{" "}
+                  — <b>{e.deviceId}</b> {e.action} ({e.prev} → {e.next})
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

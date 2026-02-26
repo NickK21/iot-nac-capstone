@@ -5,6 +5,7 @@ import {
   Param,
   NotFoundException
  } from '@nestjs/common';
+import { AUDIT } from "../audit/audit.store";
 import type { Device } from './device.interface';
 
 @Controller('devices')
@@ -35,6 +36,14 @@ export class DevicesController {
     const prev = device.state;
     device.state = 'allowed';
 
+    AUDIT.push({
+      ts: new Date().toISOString(),
+      deviceId: id,
+      action: "allow",
+      prev: prev,
+      next: device.state,
+    });
+
     console.log(
       `[DEVICE STATE CHANGE] ${id}: ${prev} -> allowed @ ${new Date().toISOString()}`
     );
@@ -52,6 +61,14 @@ export class DevicesController {
 
     const prev = device.state;
     device.state = 'denied';
+
+    AUDIT.push({
+      ts: new Date().toISOString(),
+      deviceId: id,
+      action: "deny",
+      prev: prev,
+      next: device.state,
+    });
 
     console.log(
       `[DEVICE STATE CHANGE] ${id}: ${prev} -> denied @ ${new Date().toISOString()}`
