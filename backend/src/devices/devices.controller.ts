@@ -1,22 +1,25 @@
-import { 
+import {
   Controller,
   Get,
   Post,
   Param,
-  NotFoundException
- } from '@nestjs/common';
+  NotFoundException,
+  HttpCode,
+  HttpStatus,
+} from "@nestjs/common";
+import type { Device } from "./device.interface";
 import { AUDIT } from "../audit/audit.store";
-import type { Device } from './device.interface';
+import { DeviceIdPipe } from "./device-id.pipe";
 
-@Controller('devices')
+@Controller("devices")
 export class DevicesController {
   private devices: Device[] = [
     {
-      id: 'device-1',
-      vendor: 'unknown',
-      hostname: 'unknown',
+      id: "device-1",
+      vendor: "unknown",
+      hostname: "unknown",
       lastSeen: new Date().toISOString(),
-      state: 'unknown',
+      state: "unknown",
     },
   ];
 
@@ -25,8 +28,9 @@ export class DevicesController {
     return this.devices;
   }
 
-  @Post(':id/allow')
-  allowDevice(@Param('id') id: string): Device {
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post(":id/allow")
+  allowDevice(@Param("id", DeviceIdPipe) id: string): void {
     const device = this.devices.find((d) => d.id === id);
 
     if (!device) {
@@ -34,25 +38,24 @@ export class DevicesController {
     }
 
     const prev = device.state;
-    device.state = 'allowed';
+    device.state = "allowed";
 
     AUDIT.push({
       ts: new Date().toISOString(),
       deviceId: id,
       action: "allow",
-      prev: prev,
+      prev,
       next: device.state,
     });
 
     console.log(
       `[DEVICE STATE CHANGE] ${id}: ${prev} -> allowed @ ${new Date().toISOString()}`
     );
-
-    return device;
   }
 
-  @Post(':id/deny')
-  denyDevice(@Param('id') id: string): Device {
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post(":id/deny")
+  denyDevice(@Param("id", DeviceIdPipe) id: string): void {
     const device = this.devices.find((d) => d.id === id);
 
     if (!device) {
@@ -60,20 +63,18 @@ export class DevicesController {
     }
 
     const prev = device.state;
-    device.state = 'denied';
+    device.state = "denied";
 
     AUDIT.push({
       ts: new Date().toISOString(),
       deviceId: id,
       action: "deny",
-      prev: prev,
+      prev,
       next: device.state,
     });
 
     console.log(
       `[DEVICE STATE CHANGE] ${id}: ${prev} -> denied @ ${new Date().toISOString()}`
     );
-
-    return device;
   }
 }
