@@ -12,12 +12,12 @@ Build a small-scale Network Access Control for IoT environments:
 React Dashboard -> NestJS API -> (Discovery + Policy) -> SQLite 
 
 ## Network Discovery Plan
-### Phase 1: ARP/Neighbor discovery (local)
-- Gather IP/MAC pairs using ARP/neigh table (or ARP scan tools)
+### Phase 1: ARP/Neighbor discovery
+- Gather IP/MAC pairs using ARP/neigh table
 - Normalize device records and deduplicate by MAC-derived ID
 - Update `lastSeen` when observed again
 
-### Phase 2 (optional): ICMP-assisted sweep
+### Phase 2: ICMP-assisted sweep
 - Ping subnet range to populate ARP cache
 - Re-read neighbor table to capture additional hosts
 - Use rate limiting to avoid flooding
@@ -33,7 +33,7 @@ React Dashboard -> NestJS API -> (Discovery + Policy) -> SQLite
   - state (allowed/denied/unknown)
 
 ## Policy + Enforcement Plan
-### Phase 1: simulated enforcement (safe demo)
+### Phase 1: simulated enforcement
 - Deny -> record an enforcement event + show status in UI
 - Proves lifecycle without requiring root privileges
 
