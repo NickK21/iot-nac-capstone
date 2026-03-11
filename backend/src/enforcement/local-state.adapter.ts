@@ -8,15 +8,37 @@ import type {
 
 @Injectable()
 export class LocalStateAdapter implements EnforcementAdapter {
+  name(): string {
+    return 'local-state-adapter';
+  }
+
+  capabilities() {
+    return {
+      networkIsolation: false,
+      supportsDryRun: true,
+      identityAware: false,
+    } as const;
+  }
+
+  health() {
+    return {
+      status: 'ok',
+      detail: 'Local state adapter is available',
+    } as const;
+  }
+
   apply(
     action: EnforcementAction,
-    _context: EnforcementContext,
+    context: EnforcementContext,
   ): EnforcementResult {
-    void _context;
+    void context;
 
     return {
+      result: 'applied',
       nextState: action === 'allow' ? 'allowed' : 'denied',
-      source: 'local-state-adapter',
+      source: this.name(),
+      message: `Applied ${action} through local state adapter`,
+      code: 'ok',
     };
   }
 }

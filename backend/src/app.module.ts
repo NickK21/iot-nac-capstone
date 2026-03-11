@@ -5,9 +5,16 @@ import { DevicesModule } from './devices/devices.module';
 import { AuditModule } from './audit/audit.module';
 import { PersistenceModule } from './persistence/persistence.module';
 import { EnforcementModule } from './enforcement/enforcement.module';
+import { EventsModule } from './events/events.module';
 
 @Module({
-  imports: [PersistenceModule, EnforcementModule, DevicesModule, AuditModule],
+  imports: [
+    PersistenceModule,
+    EnforcementModule,
+    EventsModule,
+    DevicesModule,
+    AuditModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
