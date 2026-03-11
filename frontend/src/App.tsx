@@ -9,6 +9,8 @@ type Device = {
   vendor?: string;
   lastSeen: string;
   state: DeviceState;
+  identityStatus: "unverified" | "verified" | "invalid";
+  lastIdentityCheck?: string | null;
 };
 
 type AuditAction = "allow" | "deny";
@@ -27,9 +29,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
 
-  async function loadDevices() {
+  async function loadDevices(options?: { silent?: boolean }) {
     try {
-      setLoading(true);
+      if (!options?.silent) {
+        setLoading(true);
+      }
       setError(null);
 
       const res = await fetch("http://localhost:3000/devices");
@@ -41,7 +45,9 @@ export default function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load devices");
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }
 
@@ -63,6 +69,11 @@ export default function App() {
 
   useEffect(() => {
     loadDevices();
+    const timer = setInterval(() => {
+      loadDevices({ silent: true }).catch(() => {});
+    }, 6000);
+
+    return () => clearInterval(timer);
   }, []);
 
   return (
@@ -79,7 +90,7 @@ export default function App() {
           <table className="nac-table">
             <thead>
               <tr>
-                {["ID", "Hostname", "Vendor", "Last Seen", "State", "Actions"].map((h) => (
+                {["ID", "Hostname", "Vendor", "Last Seen", "State", "Identity", "Actions"].map((h) => (
                   <th key={h}>{h}</th>
                 ))}
               </tr>
@@ -93,6 +104,7 @@ export default function App() {
                   <td>{d.vendor ?? "unknown"}</td>
                   <td>{d.lastSeen}</td>
                   <td>{d.state}</td>
+                  <td>{d.identityStatus}</td>
                   <td>
                     <div className="nac-actions">
                       <button

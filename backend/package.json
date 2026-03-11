@@ -8,16 +8,16 @@
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
+    "start": "NODE_OPTIONS=--experimental-sqlite nest start",
+    "start:dev": "NODE_OPTIONS=--experimental-sqlite nest start --watch",
+    "start:debug": "NODE_OPTIONS=--experimental-sqlite nest start --debug --watch",
+    "start:prod": "NODE_OPTIONS=--experimental-sqlite node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test": "NODE_OPTIONS=--experimental-sqlite jest",
+    "test:watch": "NODE_OPTIONS=--experimental-sqlite jest --watch",
+    "test:cov": "NODE_OPTIONS=--experimental-sqlite jest --coverage",
+    "test:debug": "NODE_OPTIONS=--experimental-sqlite node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "NODE_OPTIONS=--experimental-sqlite jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

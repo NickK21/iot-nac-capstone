@@ -25,6 +25,35 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## IoT NAC additions
+
+- SQLite-backed persistence (`data/nac.db`) for devices and audit logs
+- Dynamic simulated device discovery (interval-based)
+- Initial HMAC device identity endpoint: `POST /devices/report`
+- Enforcement adapter abstraction for allow/deny decisions
+
+### HMAC report endpoint
+
+`POST /devices/report`
+
+Required headers:
+
+- `x-device-id`
+- `x-device-ts` (ISO timestamp)
+- `x-device-signature` (hex HMAC-SHA256 of `<deviceId>.<timestamp>`)
+
+Secret:
+
+- `DEVICE_HMAC_SECRET` (defaults to a dev-only fallback; set this in real environments)
+
+Optional environment settings:
+
+- `SQLITE_DB_PATH` (defaults to `backend/data/nac.db` or `:memory:` in tests)
+- `DISCOVERY_SIM_DISABLED` (`true|false`)
+- `DISCOVERY_SIM_INTERVAL_MS` (default `8000`)
+- `DISCOVERY_SIM_MAX_DEVICES` (default `20`)
+- `DISCOVERY_SIM_NEW_DEVICE_CHANCE` (default `0.35`)
+
 ## Project setup
 
 ```bash

@@ -1,11 +1,11 @@
-export type AuditAction = "allow" | "deny";
+import type { DeviceState } from '../devices/device.interface';
+
+export type AuditAction = 'allow' | 'deny';
 
 export type AuditEntry = {
   ts: string;
   deviceId: string;
   action: AuditAction;
-  prev: "unknown" | "allowed" | "denied";
-  next: "unknown" | "allowed" | "denied";
+  prev: DeviceState;
+  next: DeviceState;
 };
-
-export const AUDIT: AuditEntry[] = [];
