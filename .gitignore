@@ -1,6 +1,9 @@
 # node
 node_modules
 dist
+frontend/dist
+backend/dist
+backend/data/
 
 # env
 .env
