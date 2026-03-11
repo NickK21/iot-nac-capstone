@@ -1,88 +1,30 @@
 # IoT NAC Capstone
 
-IoT Network Access Control (NAC) capstone project with a React frontend, NestJS backend, SQLite persistence, dynamic device discovery simulation, HMAC-based device identity, and policy enforcement workflows.
+This project implements Network Access Control for IoT environments where devices appear dynamically, trust can change quickly, and every access decision needs to be defensible.
 
-## Project Goals
+## Problem
 
-- Persist device, identity, event, and enforcement state in SQLite
-- Simulate dynamic discovery of IoT devices
-- Verify device identity using signed heartbeats (HMAC)
-- Apply allow/deny policy through an enforcement abstraction layer
+IoT networks are difficult to secure with static allowlists and manual review. Devices come and go, identity can be spoofed, and policy decisions often happen without clear auditability. The core problem is not just seeing devices, but deciding which devices should be trusted right now and enforcing that decision reliably.
 
-## Current Feature Status
+## What This System Does
 
-1. SQLite persistence: implemented
-2. Dynamic discovery simulation: implemented
-3. HMAC-based identity: in progress (implemented base flow + replay protection + lockout)
-4. Enforcement abstraction layer: in progress (policy engine + adapter status + dry-run path)
+The system continuously tracks devices, validates identity, evaluates policy, and records outcomes.
 
-## Monorepo Layout
+- Maintains a live device inventory with current trust and policy state.
+- Verifies signed device heartbeats to distinguish authentic reports from spoofed attempts.
+- Handles identity risk conditions such as replay attempts and repeated failed verification.
+- Applies allow/deny decisions through an enforcement abstraction layer.
+- Persists enforcement decisions and security events as an auditable history.
+- Exposes an operator-facing control plane for reviewing device posture and managing policy.
 
-- `backend/` NestJS API + SQLite + discovery + identity + enforcement
-- `frontend/` React/Vite dashboard for device operations and telemetry
-- `docs/` project docs/design notes
+## How Trust Decisions Work
 
-## Quick Start
+1. Discover: A device is observed and added/updated in inventory.  
+2. Verify: The device must pass identity validation before being treated as trusted.  
+3. Evaluate: Policy rules decide whether the requested access change is acceptable.  
+4. Enforce: The decision is applied through the enforcement layer.  
+5. Audit: Identity outcomes, policy decisions, and enforcement actions are recorded.
 
-### Prerequisites
+## Why This Matters
 
-- Node.js 20+
-- npm
-
-### 1) Start Backend
-
-```bash
-cd backend
-npm install
-npm run start:dev
-```
-
-Backend runs at `http://localhost:3000` by default.
-
-### 2) Start Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend runs at `http://localhost:5173` by default and targets backend at `http://localhost:3000`.
-
-## Important Backend Endpoints
-
-- `GET /devices`
-- `POST /devices/report`
-- `GET /devices/:id/identity`
-- `POST /devices/:id/identity/key`
-- `POST /devices/:id/allow`
-- `POST /devices/:id/deny`
-- `GET /devices/:id/enforcement`
-- `GET /events/recent`
-- `GET /enforcement/status`
-- `GET /audit`
-
-## Testing and Validation
-
-### Backend
-
-```bash
-cd backend
-npm run lint
-npm run test
-npm run test:e2e
-npm run build
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm run lint
-npm run build
-```
-
-## Notes
-
-- Main project documentation is this root `README.md`.
-- `backend/README.md` and `frontend/README.md` are subproject-specific notes.
+This capstone focuses on the full IoT NAC lifecycle: discovery, identity assurance, policy decisioning, enforcement, and auditability. The value is in turning security decisions into a repeatable, traceable process rather than ad-hoc manual control.
