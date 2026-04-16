@@ -8,6 +8,7 @@ import type {
 
 type DeviceRow = {
   id: string;
+  alias: string | null;
   vendor: string;
   hostname: string;
   last_seen: string;
@@ -18,6 +19,7 @@ type DeviceRow = {
 
 type UpsertDeviceInput = {
   id: string;
+  alias?: string | null;
   hostname?: string;
   vendor?: string;
   lastSeen: string;
@@ -34,7 +36,7 @@ export class DevicesRepository {
     const rows = this.sqlite.db
       .prepare(
         `
-        SELECT id, vendor, hostname, last_seen, state, identity_status, last_identity_check
+        SELECT id, alias, vendor, hostname, last_seen, state, identity_status, last_identity_check
         FROM devices
         ORDER BY last_seen DESC, id ASC
       `,
@@ -48,7 +50,7 @@ export class DevicesRepository {
     const row = this.sqlite.db
       .prepare(
         `
-        SELECT id, vendor, hostname, last_seen, state, identity_status, last_identity_check
+        SELECT id, alias, vendor, hostname, last_seen, state, identity_status, last_identity_check
         FROM devices
         WHERE id = ?
       `,
@@ -68,9 +70,10 @@ export class DevicesRepository {
     this.sqlite.db
       .prepare(
         `
-        INSERT INTO devices (id, vendor, hostname, last_seen, state, identity_status, last_identity_check)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO devices (id, alias, vendor, hostname, last_seen, state, identity_status, last_identity_check)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+          alias = excluded.alias,
           vendor = excluded.vendor,
           hostname = excluded.hostname,
           last_seen = excluded.last_seen,
@@ -81,12 +84,13 @@ export class DevicesRepository {
       )
       .run(
         input.id,
-        input.vendor ?? current?.vendor ?? 'unknown',
-        input.hostname ?? current?.hostname ?? 'unknown',
+        this.resolveAlias(input, current),
+        this.resolveTextField(input, current, 'vendor'),
+        this.resolveTextField(input, current, 'hostname'),
         input.lastSeen,
         input.state ?? current?.state ?? 'unknown',
-        input.identityStatus ?? current?.identityStatus ?? 'unverified',
-        input.lastIdentityCheck ?? current?.lastIdentityCheck ?? null,
+        input.identityStatus ?? current?.identityStatus ?? 'pending',
+        this.resolveLastIdentityCheck(input, current),
       );
 
     return this.mustFind(input.id);
@@ -135,6 +139,25 @@ export class DevicesRepository {
     return this.mustFind(id);
   }
 
+  updateAlias(id: string, alias: string | null): Device | undefined {
+    const current = this.findById(id);
+    if (!current) {
+      return undefined;
+    }
+
+    this.sqlite.db
+      .prepare(
+        `
+        UPDATE devices
+        SET alias = ?
+        WHERE id = ?
+      `,
+      )
+      .run(alias, id);
+
+    return this.mustFind(id);
+  }
+
   private mustFind(id: string): Device {
     const device = this.findById(id);
     if (!device) {
@@ -146,6 +169,7 @@ export class DevicesRepository {
   private toDevice(row: DeviceRow): Device {
     return {
       id: row.id,
+      alias: row.alias,
       vendor: row.vendor,
       hostname: row.hostname,
       lastSeen: row.last_seen,
@@ -153,5 +177,39 @@ export class DevicesRepository {
       identityStatus: row.identity_status,
       lastIdentityCheck: row.last_identity_check,
     };
+  }
+
+  private resolveAlias(
+    input: UpsertDeviceInput,
+    current: Device | undefined,
+  ): string | null {
+    if (Object.prototype.hasOwnProperty.call(input, 'alias')) {
+      return input.alias ?? null;
+    }
+
+    return current?.alias ?? null;
+  }
+
+  private resolveTextField(
+    input: UpsertDeviceInput,
+    current: Device | undefined,
+    field: 'hostname' | 'vendor',
+  ): string {
+    if (Object.prototype.hasOwnProperty.call(input, field)) {
+      return input[field] ?? 'unknown';
+    }
+
+    return current?.[field] ?? 'unknown';
+  }
+
+  private resolveLastIdentityCheck(
+    input: UpsertDeviceInput,
+    current: Device | undefined,
+  ): string | null {
+    if (Object.prototype.hasOwnProperty.call(input, 'lastIdentityCheck')) {
+      return input.lastIdentityCheck ?? null;
+    }
+
+    return current?.lastIdentityCheck ?? null;
   }
 }

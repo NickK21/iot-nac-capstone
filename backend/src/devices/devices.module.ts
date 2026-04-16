@@ -2,9 +2,10 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { EnforcementModule } from '../enforcement/enforcement.module';
 import { EventsModule } from '../events/events.module';
-import { DeviceDiscoveryService } from './device-discovery.service';
 import { DeviceIdentityService } from './device-identity.service';
+import { DeviceProvisioningService } from './device-provisioning.service';
 import { DevicesController } from './devices.controller';
+import { EnrollmentLogService } from './enrollment-log.service';
 import { DevicesRepository } from './devices.repository';
 import { DevicesService } from './devices.service';
 
@@ -15,8 +16,14 @@ import { DevicesService } from './devices.service';
     DevicesService,
     DevicesRepository,
     DeviceIdentityService,
-    DeviceDiscoveryService,
+    DeviceProvisioningService,
+    EnrollmentLogService,
   ],
-  exports: [DevicesService, DeviceIdentityService],
+  exports: [
+    DevicesService,
+    DeviceIdentityService,
+    DeviceProvisioningService,
+    EnrollmentLogService,
+  ],
 })
 export class DevicesModule {}

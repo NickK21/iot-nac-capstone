@@ -4,6 +4,8 @@ import { SqliteService } from '../persistence/sqlite.service';
 
 type VerificationResult = {
   valid: boolean;
+  keySource: 'device' | 'fallback';
+  security: DeviceIdentitySecurityState;
   reason?: string;
 };
 
@@ -153,28 +155,44 @@ export class DeviceIdentityService {
     if (lockoutState.lockedOut && lockoutState.lockoutUntil) {
       return {
         valid: false,
+        keySource: this.getDeviceSecret(deviceId) ? 'device' : 'fallback',
+        security: this.toSecurityState(lockoutState),
         reason: `device temporarily locked until ${lockoutState.lockoutUntil}`,
       };
     }
 
+    const keySource = this.getDeviceSecret(deviceId) ? 'device' : 'fallback';
+
     const tsMs = Date.parse(timestamp);
     if (!Number.isFinite(tsMs)) {
-      return this.reject(deviceId, 'invalid timestamp format');
+      return this.reject(deviceId, 'invalid timestamp format', keySource);
     }
 
     if (Math.abs(nowMs - tsMs) > this.maxSkewMs) {
-      return this.reject(deviceId, 'timestamp outside allowed skew window');
+      return this.reject(
+        deviceId,
+        'timestamp outside allowed skew window',
+        keySource,
+      );
     }
 
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(nonce)) {
-      return this.reject(deviceId, 'invalid nonce format');
+      return this.reject(deviceId, 'invalid nonce format', keySource);
     }
 
     if (!/^[a-fA-F0-9]{64}$/.test(signatureHex)) {
-      return this.reject(deviceId, 'invalid signature format');
+      return this.reject(deviceId, 'invalid signature format', keySource);
     }
 
-    const secret = this.getDeviceSecret(deviceId) ?? this.fallbackSecret;
+    const secret = this.getDeviceSecret(deviceId);
+    if (!secret) {
+      return this.reject(
+        deviceId,
+        'device is not enrolled with a per-device key',
+        'fallback',
+      );
+    }
+
     const canonical = `${deviceId}.${timestamp}.${nonce}`;
     const expected = createHmac('sha256', secret).update(canonical).digest();
 
@@ -182,29 +200,37 @@ export class DeviceIdentityService {
     try {
       provided = Buffer.from(signatureHex, 'hex');
     } catch {
-      return this.reject(deviceId, 'invalid signature encoding');
+      return this.reject(deviceId, 'invalid signature encoding', keySource);
     }
 
     if (provided.length !== expected.length) {
-      return this.reject(deviceId, 'signature length mismatch');
+      return this.reject(deviceId, 'signature length mismatch', keySource);
     }
 
     if (!timingSafeEqual(expected, provided)) {
-      return this.reject(deviceId, 'signature mismatch');
+      return this.reject(deviceId, 'signature mismatch', keySource);
     }
 
     if (!this.registerNonce(deviceId, nonce, timestamp)) {
-      return this.reject(deviceId, 'nonce replay detected');
+      return this.reject(deviceId, 'nonce replay detected', keySource);
     }
 
     this.clearFailures(deviceId);
-    return { valid: true };
+    return {
+      valid: true,
+      keySource: 'device',
+      security: this.getSecurityState(deviceId),
+    };
   }
 
   sign(deviceId: string, timestamp: string, nonce: string): string {
     const secret = this.getDeviceSecret(deviceId) ?? this.fallbackSecret;
     const canonical = `${deviceId}.${timestamp}.${nonce}`;
     return createHmac('sha256', secret).update(canonical).digest('hex');
+  }
+
+  clearSecurityState(deviceId: string): void {
+    this.clearFailures(deviceId);
   }
 
   private getDeviceSecret(deviceId: string): string | undefined {
@@ -251,9 +277,18 @@ export class DeviceIdentityService {
       .run(cutoffIso);
   }
 
-  private reject(deviceId: string, reason: string): VerificationResult {
+  private reject(
+    deviceId: string,
+    reason: string,
+    keySource: 'device' | 'fallback',
+  ): VerificationResult {
     this.recordFailure(deviceId, reason);
-    return { valid: false, reason };
+    return {
+      valid: false,
+      keySource,
+      security: this.getSecurityState(deviceId),
+      reason,
+    };
   }
 
   private recordFailure(deviceId: string, reason: string): void {
@@ -332,5 +367,18 @@ export class DeviceIdentityService {
       `,
       )
       .run(cutoffIso);
+  }
+
+  private toSecurityState(
+    lockoutState: LockoutState,
+  ): DeviceIdentitySecurityState {
+    return {
+      maxFailures: this.maxFailures,
+      failureWindowMs: this.failureWindowMs,
+      lockoutMs: this.lockoutMs,
+      recentFailures: lockoutState.recentFailures,
+      lockedOut: lockoutState.lockedOut,
+      lockoutUntil: lockoutState.lockoutUntil,
+    };
   }
 }

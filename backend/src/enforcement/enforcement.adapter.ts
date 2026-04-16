@@ -5,7 +5,9 @@ export type EnforcementAction = 'allow' | 'deny';
 
 export type PolicyDecisionCode =
   | 'ok'
+  | 'identity_not_verified'
   | 'identity_invalid'
+  | 'identity_locked'
   | 'already_allowed'
   | 'already_denied';
 

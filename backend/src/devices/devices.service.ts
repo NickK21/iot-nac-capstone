@@ -16,19 +16,30 @@ import { EnforcementService } from '../enforcement/enforcement.service';
 import { PolicyEngineService } from '../enforcement/policy-engine.service';
 import { EventsService } from '../events/events.service';
 import type { DeviceReportDto } from './device-report.dto';
-import type { Device } from './device.interface';
 import { DeviceIdentityService } from './device-identity.service';
+import { DeviceProvisioningService } from './device-provisioning.service';
+import type { Device, DeviceIdentityStatus } from './device.interface';
 import { DevicesRepository } from './devices.repository';
+import { EnrollmentLogService } from './enrollment-log.service';
 
 type SignedDeviceHeaders = {
   deviceId: string;
   timestamp: string;
   nonce: string;
   signature: string;
+  provisioningToken?: string;
+};
+
+type DevicePlaceholderInput = {
+  id: string;
+  alias?: string | null;
+  hostname?: string;
+  vendor?: string;
 };
 
 type IdentityProfile = {
   deviceId: string;
+  alias: string | null;
   identityStatus: Device['identityStatus'];
   lastIdentityCheck: string | null;
   keyConfigured: boolean;
@@ -47,33 +58,45 @@ type IdentityProfile = {
     lockedOut: boolean;
     lockoutUntil: string | null;
   };
+  provisioning: {
+    headerName: 'x-device-provisioning-token';
+    requiredOnFirstHeartbeat: true;
+    active: boolean;
+    issuedAt: string | null;
+    expiresAt: string | null;
+    consumedAt: string | null;
+  };
+  heartbeat: {
+    endpoint: '/devices/report';
+    method: 'POST';
+    payloadFields: ['id', 'hostname', 'vendor'];
+    requiredHeaders: [
+      'x-device-id',
+      'x-device-ts',
+      'x-device-nonce',
+      'x-device-signature',
+    ];
+    provisioningHeader: 'x-device-provisioning-token';
+  };
+};
+
+type IdentityKeyResponse = {
+  deviceId: string;
+  alias: string | null;
+  keyUpdatedAt: string;
+  changeType: 'created' | 'updated';
+  identityStatus: 'enrolled';
+  provisioningToken: {
+    token: string;
+    issuedAt: string;
+    expiresAt: string;
+    headerName: 'x-device-provisioning-token';
+  };
 };
 
 @Injectable()
 export class DevicesService {
   private readonly logger = new Logger(DevicesService.name);
-  private readonly discoveryVendors = [
-    'Acme',
-    'Nordic',
-    'Espressif',
-    'Raspberry Pi',
-    'Shelly',
-    'Tuya',
-  ];
-  private readonly discoveryPrefixes = [
-    'sensor',
-    'cam',
-    'plug',
-    'lock',
-    'hub',
-    'meter',
-  ];
-  private readonly maxSimDevices = Number(
-    process.env.DISCOVERY_SIM_MAX_DEVICES ?? 20,
-  );
-  private readonly discoveryNewChance = Number(
-    process.env.DISCOVERY_SIM_NEW_DEVICE_CHANCE ?? 0.35,
-  );
 
   constructor(
     private readonly devicesRepository: DevicesRepository,
@@ -81,6 +104,8 @@ export class DevicesService {
     private readonly enforcementLogService: EnforcementLogService,
     private readonly eventsService: EventsService,
     private readonly identityService: DeviceIdentityService,
+    private readonly provisioningService: DeviceProvisioningService,
+    private readonly enrollmentLogService: EnrollmentLogService,
     private readonly policyEngine: PolicyEngineService,
     private readonly enforcementService: EnforcementService,
   ) {}
@@ -89,36 +114,117 @@ export class DevicesService {
     return this.devicesRepository.listDevices();
   }
 
-  setIdentityKey(
-    id: string,
-    secret: string,
-  ): {
-    deviceId: string;
-    keyUpdatedAt: string;
-    changeType: 'created' | 'updated';
-  } {
+  createPlaceholder(input: DevicePlaceholderInput): Device {
+    const id = input.id.trim();
+    const now = new Date().toISOString();
     const existing = this.devicesRepository.findById(id);
+    const upsertInput: Parameters<DevicesRepository['upsertDevice']>[0] = {
+      id,
+      lastSeen: now,
+      state: existing?.state ?? 'unknown',
+      identityStatus: existing?.identityStatus ?? 'pending',
+      lastIdentityCheck: existing?.lastIdentityCheck ?? null,
+    };
+
+    if (Object.prototype.hasOwnProperty.call(input, 'alias')) {
+      upsertInput.alias = this.normalizeOptionalText(input.alias);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'hostname')) {
+      upsertInput.hostname =
+        this.normalizeOptionalText(input.hostname) ?? undefined;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'vendor')) {
+      upsertInput.vendor =
+        this.normalizeOptionalText(input.vendor) ?? undefined;
+    }
+
+    const device = this.devicesRepository.upsertDevice(upsertInput);
     if (!existing) {
-      this.devicesRepository.upsertDevice({
-        id,
-        lastSeen: new Date().toISOString(),
-        state: 'unknown',
-        identityStatus: 'unverified',
+      this.enrollmentLogService.record({
+        ts: now,
+        deviceId: id,
+        action: 'pending_created',
+        message: `Pending inventory record created for ${id}`,
+        details: {
+          alias: device.alias ?? null,
+          hostname: device.hostname ?? 'unknown',
+          vendor: device.vendor ?? 'unknown',
+        },
       });
     }
 
-    const updated = this.identityService.setDeviceSecret(id, secret);
-    this.eventsService.record({
-      type: 'identity_key_rotated',
-      severity: 'info',
-      ts: updated.keyUpdatedAt,
-      deviceId: id,
-      message: `Identity key ${updated.changeType} for ${id}`,
-      details: {
-        keyScope: 'device',
-        changeType: updated.changeType,
-      },
-    });
+    return device;
+  }
+
+  enrollDevice(
+    id: string,
+    secret: string,
+    alias?: string | null,
+  ): IdentityKeyResponse {
+    return this.upsertIdentityKey(id, secret, alias);
+  }
+
+  setIdentityKey(
+    id: string,
+    secret: string,
+    alias?: string | null,
+  ): IdentityKeyResponse {
+    return this.upsertIdentityKey(id, secret, alias);
+  }
+
+  issueProvisioningToken(id: string) {
+    const existing = this.devicesRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    if (existing.identityStatus !== 'enrolled') {
+      throw new HttpException(
+        'Provisioning token can only be issued while the device is enrolled',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    const keyMetadata = this.identityService.getDeviceIdentityKeyMetadata(id);
+    if (!keyMetadata.keyConfigured) {
+      throw new HttpException(
+        'Device must have a per-device key before issuing a provisioning token',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    return this.issueAndRecordProvisioningToken(id);
+  }
+
+  updateAlias(id: string, alias?: string | null): Device {
+    const existing = this.devicesRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    const normalizedAlias = this.normalizeOptionalText(alias);
+    const updated = this.devicesRepository.updateAlias(id, normalizedAlias);
+    if (!updated) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    if ((existing.alias ?? null) !== (updated.alias ?? null)) {
+      this.enrollmentLogService.record({
+        ts: new Date().toISOString(),
+        deviceId: id,
+        action: 'alias_updated',
+        message: updated.alias
+          ? `Alias updated to ${updated.alias}`
+          : 'Alias cleared',
+        details: {
+          previousAlias: existing.alias ?? null,
+          nextAlias: updated.alias ?? null,
+        },
+      });
+    }
+
     return updated;
   }
 
@@ -131,16 +237,33 @@ export class DevicesService {
     const keyMetadata = this.identityService.getDeviceIdentityKeyMetadata(id);
     const hmacConfig = this.identityService.getConfig();
     const securityState = this.identityService.getSecurityState(id);
+    const provisioningState = this.provisioningService.getMetadata(id);
 
     return {
       deviceId: id,
-      identityStatus: existing.identityStatus,
+      alias: existing.alias ?? null,
+      identityStatus: securityState.lockedOut
+        ? 'locked'
+        : existing.identityStatus,
       lastIdentityCheck: existing.lastIdentityCheck ?? null,
       keyConfigured: keyMetadata.keyConfigured,
       keySource: keyMetadata.keySource,
       keyUpdatedAt: keyMetadata.keyUpdatedAt,
       hmac: hmacConfig,
       security: securityState,
+      provisioning: provisioningState,
+      heartbeat: {
+        endpoint: '/devices/report',
+        method: 'POST',
+        payloadFields: ['id', 'hostname', 'vendor'],
+        requiredHeaders: [
+          'x-device-id',
+          'x-device-ts',
+          'x-device-nonce',
+          'x-device-signature',
+        ],
+        provisioningHeader: 'x-device-provisioning-token',
+      },
     };
   }
 
@@ -153,6 +276,15 @@ export class DevicesService {
     return this.enforcementLogService.listForDevice(id);
   }
 
+  getEnrollmentHistory(id: string) {
+    const existing = this.devicesRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    return this.enrollmentLogService.listForDevice(id);
+  }
+
   applyPolicy(id: string, action: EnforcementAction): EnforcementResult {
     const existing = this.devicesRepository.findById(id);
     if (!existing) {
@@ -163,7 +295,7 @@ export class DevicesService {
     const context = {
       deviceId: id,
       prevState: existing.state,
-      identityStatus: existing.identityStatus,
+      identityStatus: this.currentIdentityStatus(existing),
       requestedAt: now,
     };
     const policyEvaluation = this.policyEngine.evaluate(action, context);
@@ -260,6 +392,9 @@ export class DevicesService {
     const existing = this.devicesRepository.findById(payload.id);
 
     if (headers.deviceId !== payload.id) {
+      if (existing) {
+        this.devicesRepository.updateIdentityStatus(payload.id, 'invalid', now);
+      }
       this.eventsService.record({
         type: 'identity_failed',
         severity: 'warning',
@@ -283,26 +418,42 @@ export class DevicesService {
       headers.nonce,
       headers.signature,
     );
+
     if (!verified.valid) {
-      if (existing) {
-        this.devicesRepository.updateIdentityStatus(payload.id, 'invalid', now);
-      }
+      const failedStatus: DeviceIdentityStatus = verified.security.lockedOut
+        ? 'locked'
+        : 'invalid';
+
+      this.devicesRepository.upsertDevice({
+        id: payload.id,
+        alias: existing?.alias ?? null,
+        hostname: this.normalizeOptionalText(payload.hostname) ?? undefined,
+        vendor: this.normalizeOptionalText(payload.vendor) ?? undefined,
+        lastSeen: now,
+        state: existing?.state ?? 'unknown',
+        identityStatus: failedStatus,
+        lastIdentityCheck: now,
+      });
+
       this.eventsService.record({
         type: 'identity_failed',
-        severity: 'warning',
+        severity: verified.security.lockedOut ? 'critical' : 'warning',
         ts: now,
-        deviceId: existing ? payload.id : undefined,
+        deviceId: payload.id,
         message: `Identity check failed for ${payload.id}`,
         details: {
           payloadDeviceId: payload.id,
           reason: verified.reason ?? 'unknown',
           headerDeviceId: headers.deviceId,
           nonce: headers.nonce,
+          keySource: verified.keySource,
+          identityStatus: failedStatus,
         },
       });
-      if (verified.reason?.startsWith('device temporarily locked until ')) {
+
+      if (verified.security.lockedOut && verified.security.lockoutUntil) {
         throw new HttpException(
-          `Identity verification temporarily locked: ${verified.reason}`,
+          `Identity verification temporarily locked: device temporarily locked until ${verified.security.lockoutUntil}`,
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
@@ -313,10 +464,63 @@ export class DevicesService {
     }
 
     const current = this.devicesRepository.findById(payload.id);
+    if (current?.identityStatus === 'enrolled') {
+      const tokenResult = this.provisioningService.consumeToken(
+        payload.id,
+        headers.provisioningToken,
+      );
+
+      if (!tokenResult.valid) {
+        this.devicesRepository.upsertDevice({
+          id: payload.id,
+          alias: current.alias ?? null,
+          hostname: this.normalizeOptionalText(payload.hostname) ?? undefined,
+          vendor: this.normalizeOptionalText(payload.vendor) ?? undefined,
+          lastSeen: now,
+          state: current.state,
+          identityStatus: 'enrolled',
+          lastIdentityCheck: now,
+        });
+
+        this.eventsService.record({
+          type: 'identity_failed',
+          severity: 'warning',
+          ts: now,
+          deviceId: payload.id,
+          message: `Provisioning validation failed for ${payload.id}`,
+          details: {
+            payloadDeviceId: payload.id,
+            reason: tokenResult.reason ?? 'unknown',
+            headerDeviceId: headers.deviceId,
+            nonce: headers.nonce,
+            provisioningHeader: 'x-device-provisioning-token',
+          },
+        });
+
+        throw new UnauthorizedException(
+          `Provisioning validation failed: ${tokenResult.reason}`,
+        );
+      }
+
+      if (tokenResult.consumedAt) {
+        this.enrollmentLogService.record({
+          ts: tokenResult.consumedAt,
+          deviceId: payload.id,
+          action: 'provisioning_token_consumed',
+          message:
+            'One-time provisioning token consumed on first verified heartbeat',
+          details: {
+            consumedAt: tokenResult.consumedAt,
+          },
+        });
+      }
+    }
+
     const upserted = this.devicesRepository.upsertDevice({
       id: payload.id,
-      hostname: payload.hostname,
-      vendor: payload.vendor,
+      alias: current?.alias ?? null,
+      hostname: this.normalizeOptionalText(payload.hostname) ?? undefined,
+      vendor: this.normalizeOptionalText(payload.vendor) ?? undefined,
       lastSeen: now,
       state: current?.state ?? 'unknown',
       identityStatus: 'verified',
@@ -332,80 +536,128 @@ export class DevicesService {
       details: {
         headerDeviceId: headers.deviceId,
         nonce: headers.nonce,
+        keySource: verified.keySource,
       },
     });
 
     return upserted;
   }
 
-  runDiscoveryTick(): Device {
-    const devices = this.devicesRepository.listDevices();
-    const shouldCreateNew =
-      devices.length === 0 ||
-      (devices.length < this.maxSimDevices &&
-        Math.random() < this.discoveryNewChance);
+  private upsertIdentityKey(
+    id: string,
+    secret: string,
+    alias?: string | null,
+  ): IdentityKeyResponse {
+    const now = new Date().toISOString();
+    const existing = this.devicesRepository.findById(id);
+    const normalizedAlias = this.normalizeOptionalText(alias);
 
-    if (shouldCreateNew) {
-      const created = this.devicesRepository.upsertDevice({
-        id: this.generateSimDeviceId(),
-        hostname: this.randomHostname(),
-        vendor: this.randomVendor(),
-        lastSeen: new Date().toISOString(),
+    if (!existing) {
+      this.devicesRepository.upsertDevice({
+        id,
+        alias: normalizedAlias,
+        lastSeen: now,
         state: 'unknown',
-        identityStatus: 'unverified',
+        identityStatus: 'pending',
+        lastIdentityCheck: null,
       });
-
-      this.logger.log(
-        `[DISCOVERY] New simulated device discovered: ${created.id}`,
-      );
-      this.eventsService.record({
-        type: 'discovery',
-        severity: 'info',
-        ts: created.lastSeen,
-        deviceId: created.id,
-        message: `Discovered new device ${created.id}`,
+      this.enrollmentLogService.record({
+        ts: now,
+        deviceId: id,
+        action: 'pending_created',
+        message: `Pending inventory record created for ${id}`,
         details: {
-          hostname: created.hostname ?? 'unknown',
-          vendor: created.vendor ?? 'unknown',
-          mode: 'automatic',
+          alias: normalizedAlias,
         },
       });
-      return created;
+    } else if (normalizedAlias !== null || alias !== undefined) {
+      this.updateAlias(id, normalizedAlias);
     }
 
-    const target = devices[Math.floor(Math.random() * devices.length)];
-    const refreshed = this.devicesRepository.upsertDevice({
-      id: target.id,
-      hostname: target.hostname,
-      vendor: target.vendor,
-      lastSeen: new Date().toISOString(),
-      state: target.state,
-      identityStatus: target.identityStatus,
-      lastIdentityCheck: target.lastIdentityCheck ?? null,
+    const updatedKey = this.identityService.setDeviceSecret(id, secret);
+    this.identityService.clearSecurityState(id);
+    const provisioningToken = this.issueAndRecordProvisioningToken(id);
+
+    const current = this.devicesRepository.findById(id);
+    const enrolled = this.devicesRepository.upsertDevice({
+      id,
+      alias:
+        normalizedAlias !== null || alias !== undefined
+          ? normalizedAlias
+          : (current?.alias ?? null),
+      hostname: current?.hostname,
+      vendor: current?.vendor,
+      lastSeen: now,
+      state: current?.state ?? 'unknown',
+      identityStatus: 'enrolled',
+      lastIdentityCheck: null,
     });
 
-    this.logger.debug(
-      `[DISCOVERY] Refreshed simulated heartbeat for ${refreshed.id}`,
-    );
-    return refreshed;
+    this.eventsService.record({
+      type: 'identity_key_rotated',
+      severity: 'info',
+      ts: updatedKey.keyUpdatedAt,
+      deviceId: id,
+      message: `Identity key ${updatedKey.changeType} for ${id}`,
+      details: {
+        keyScope: 'device',
+        changeType: updatedKey.changeType,
+        identityStatus: enrolled.identityStatus,
+      },
+    });
+
+    this.enrollmentLogService.record({
+      ts: updatedKey.keyUpdatedAt,
+      deviceId: id,
+      action:
+        updatedKey.changeType === 'created' ? 'device_enrolled' : 'key_rotated',
+      message:
+        updatedKey.changeType === 'created'
+          ? `Device enrolled with a per-device key`
+          : `Device key rotated and trust reset to enrolled`,
+      details: {
+        keyUpdatedAt: updatedKey.keyUpdatedAt,
+        identityStatus: enrolled.identityStatus,
+      },
+    });
+
+    return {
+      deviceId: id,
+      alias: enrolled.alias ?? null,
+      keyUpdatedAt: updatedKey.keyUpdatedAt,
+      changeType: updatedKey.changeType,
+      identityStatus: 'enrolled',
+      provisioningToken,
+    };
   }
 
-  private randomVendor(): string {
-    return this.discoveryVendors[
-      Math.floor(Math.random() * this.discoveryVendors.length)
-    ];
+  private issueAndRecordProvisioningToken(id: string) {
+    const token = this.provisioningService.issueToken(id);
+    this.enrollmentLogService.record({
+      ts: token.issuedAt,
+      deviceId: id,
+      action: 'provisioning_token_issued',
+      message:
+        'One-time provisioning token issued for first verified heartbeat',
+      details: {
+        expiresAt: token.expiresAt,
+        headerName: token.headerName,
+      },
+    });
+    return token;
   }
 
-  private randomHostname(): string {
-    const prefix =
-      this.discoveryPrefixes[
-        Math.floor(Math.random() * this.discoveryPrefixes.length)
-      ];
-    const suffix = Math.floor(1000 + Math.random() * 9000);
-    return `${prefix}-${suffix}`;
+  private currentIdentityStatus(device: Device): DeviceIdentityStatus {
+    const securityState = this.identityService.getSecurityState(device.id);
+    return securityState.lockedOut ? 'locked' : device.identityStatus;
   }
 
-  private generateSimDeviceId(): string {
-    return `sim-${Math.random().toString(36).slice(2, 10)}`;
+  private normalizeOptionalText(value?: string | null): string | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized ? normalized : null;
   }
 }

@@ -17,11 +17,31 @@ export class PolicyEngineService {
     action: EnforcementAction,
     context: EnforcementContext,
   ): PolicyEvaluation {
+    if (
+      action === 'allow' &&
+      (context.identityStatus === 'pending' ||
+        context.identityStatus === 'enrolled')
+    ) {
+      return {
+        allowed: false,
+        code: 'identity_not_verified',
+        message: `Allow blocked: device identity is ${context.identityStatus}`,
+      };
+    }
+
     if (action === 'allow' && context.identityStatus === 'invalid') {
       return {
         allowed: false,
         code: 'identity_invalid',
         message: 'Allow blocked: device identity is invalid',
+      };
+    }
+
+    if (action === 'allow' && context.identityStatus === 'locked') {
+      return {
+        allowed: false,
+        code: 'identity_locked',
+        message: 'Allow blocked: device identity is locked',
       };
     }
 
