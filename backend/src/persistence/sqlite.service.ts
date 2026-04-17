@@ -60,6 +60,12 @@ export class SqliteService implements OnModuleInit, OnModuleDestroy {
         alias TEXT,
         vendor TEXT NOT NULL DEFAULT 'unknown',
         hostname TEXT NOT NULL DEFAULT 'unknown',
+        model TEXT NOT NULL DEFAULT 'unknown',
+        location TEXT,
+        mac_address TEXT,
+        fingerprint TEXT,
+        archived_at TEXT,
+        profile_sources_json TEXT,
         last_seen TEXT NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('unknown', 'allowed', 'denied')),
         identity_status TEXT NOT NULL DEFAULT 'pending' CHECK (
@@ -144,8 +150,11 @@ export class SqliteService implements OnModuleInit, OnModuleDestroy {
             'device_enrolled',
             'key_rotated',
             'alias_updated',
+            'profile_updated',
             'provisioning_token_issued',
-            'provisioning_token_consumed'
+            'provisioning_token_consumed',
+            'device_archived',
+            'device_restored'
           )
         ),
         message TEXT NOT NULL,
@@ -175,6 +184,7 @@ export class SqliteService implements OnModuleInit, OnModuleDestroy {
 
     this.ensureDevicesTableShape();
     this.ensureEnforcementLogsTableShape();
+    this.ensureEnrollmentLogsTableShape();
     this.ensureIndexes();
   }
 
@@ -184,33 +194,97 @@ export class SqliteService implements OnModuleInit, OnModuleDestroy {
     this.db
       .prepare(
         `
-        INSERT INTO devices (id, alias, vendor, hostname, last_seen, state, identity_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO devices (
+          id,
+          alias,
+          vendor,
+          hostname,
+          model,
+          location,
+          mac_address,
+          fingerprint,
+          archived_at,
+          profile_sources_json,
+          last_seen,
+          state,
+          identity_status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO NOTHING
       `,
       )
-      .run('device-1', null, 'unknown', 'unknown', now, 'unknown', 'pending');
+      .run(
+        'device-1',
+        null,
+        'unknown',
+        'unknown',
+        'unknown',
+        null,
+        null,
+        null,
+        null,
+        JSON.stringify({
+          hostname: 'unknown',
+          vendor: 'unknown',
+          model: 'unknown',
+          location: 'unknown',
+          macAddress: 'unknown',
+          fingerprint: 'unknown',
+        }),
+        now,
+        'unknown',
+        'pending',
+      );
   }
 
   private ensureDevicesTableShape(): void {
     const tableSql = this.getTableSql('devices');
     const hasAlias = this.hasColumn('devices', 'alias');
+    const hasModel = this.hasColumn('devices', 'model');
+    const hasLocation = this.hasColumn('devices', 'location');
+    const hasMacAddress = this.hasColumn('devices', 'mac_address');
+    const hasFingerprint = this.hasColumn('devices', 'fingerprint');
+    const hasArchivedAt = this.hasColumn('devices', 'archived_at');
+    const hasProfileSources = this.hasColumn('devices', 'profile_sources_json');
     const supportsIdentityLifecycle =
       tableSql.includes("'pending'") &&
       tableSql.includes("'enrolled'") &&
       tableSql.includes("'locked'");
 
-    if (hasAlias && supportsIdentityLifecycle) {
+    if (
+      hasAlias &&
+      hasModel &&
+      hasLocation &&
+      hasMacAddress &&
+      hasFingerprint &&
+      hasArchivedAt &&
+      hasProfileSources &&
+      supportsIdentityLifecycle
+    ) {
       return;
     }
 
     const aliasSelect = hasAlias ? 'alias' : 'NULL';
+    const modelSelect = hasModel ? 'model' : "'unknown'";
+    const locationSelect = hasLocation ? 'location' : 'NULL';
+    const macAddressSelect = hasMacAddress ? 'mac_address' : 'NULL';
+    const fingerprintSelect = hasFingerprint ? 'fingerprint' : 'NULL';
+    const archivedAtSelect = hasArchivedAt ? 'archived_at' : 'NULL';
+    const profileSourcesSelect = hasProfileSources
+      ? 'profile_sources_json'
+      : `'{"hostname":"unknown","vendor":"unknown","model":"unknown","location":"unknown","macAddress":"unknown","fingerprint":"unknown"}'`;
     this.rebuildTable(`
       CREATE TABLE devices_new (
         id TEXT PRIMARY KEY,
         alias TEXT,
         vendor TEXT NOT NULL DEFAULT 'unknown',
         hostname TEXT NOT NULL DEFAULT 'unknown',
+        model TEXT NOT NULL DEFAULT 'unknown',
+        location TEXT,
+        mac_address TEXT,
+        fingerprint TEXT,
+        archived_at TEXT,
+        profile_sources_json TEXT,
         last_seen TEXT NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('unknown', 'allowed', 'denied')),
         identity_status TEXT NOT NULL DEFAULT 'pending' CHECK (
@@ -220,13 +294,32 @@ export class SqliteService implements OnModuleInit, OnModuleDestroy {
       );
 
       INSERT INTO devices_new (
-        id, alias, vendor, hostname, last_seen, state, identity_status, last_identity_check
+        id,
+        alias,
+        vendor,
+        hostname,
+        model,
+        location,
+        mac_address,
+        fingerprint,
+        archived_at,
+        profile_sources_json,
+        last_seen,
+        state,
+        identity_status,
+        last_identity_check
       )
       SELECT
         id,
         ${aliasSelect},
         vendor,
         hostname,
+        ${modelSelect},
+        ${locationSelect},
+        ${macAddressSelect},
+        ${fingerprintSelect},
+        ${archivedAtSelect},
+        ${profileSourcesSelect},
         last_seen,
         state,
         CASE identity_status
@@ -310,9 +403,53 @@ export class SqliteService implements OnModuleInit, OnModuleDestroy {
     `);
   }
 
+  private ensureEnrollmentLogsTableShape(): void {
+    const tableSql = this.getTableSql('enrollment_logs');
+    const supportsLifecycleActions =
+      tableSql.includes("'profile_updated'") &&
+      tableSql.includes("'device_archived'") &&
+      tableSql.includes("'device_restored'");
+
+    if (supportsLifecycleActions) {
+      return;
+    }
+
+    this.rebuildTable(`
+      CREATE TABLE enrollment_logs_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (
+          action IN (
+            'pending_created',
+            'device_enrolled',
+            'key_rotated',
+            'alias_updated',
+            'profile_updated',
+            'provisioning_token_issued',
+            'provisioning_token_consumed',
+            'device_archived',
+            'device_restored'
+          )
+        ),
+        message TEXT NOT NULL,
+        details_json TEXT,
+        FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO enrollment_logs_new (id, ts, device_id, action, message, details_json)
+      SELECT id, ts, device_id, action, message, details_json
+      FROM enrollment_logs;
+
+      DROP TABLE enrollment_logs;
+      ALTER TABLE enrollment_logs_new RENAME TO enrollment_logs;
+    `);
+  }
+
   private ensureIndexes(): void {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen DESC);
+      CREATE INDEX IF NOT EXISTS idx_devices_archived_at ON devices(archived_at DESC);
       CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts DESC);
       CREATE INDEX IF NOT EXISTS idx_enforcement_ts ON enforcement_logs(ts DESC);
       CREATE INDEX IF NOT EXISTS idx_enforcement_device_ts ON enforcement_logs(device_id, ts DESC);

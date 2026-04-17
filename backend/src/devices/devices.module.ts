@@ -3,6 +3,7 @@ import { AuditModule } from '../audit/audit.module';
 import { EnforcementModule } from '../enforcement/enforcement.module';
 import { EventsModule } from '../events/events.module';
 import { DeviceIdentityService } from './device-identity.service';
+import { DeviceProfileInferenceService } from './device-profile-inference.service';
 import { DeviceProvisioningService } from './device-provisioning.service';
 import { DevicesController } from './devices.controller';
 import { EnrollmentLogService } from './enrollment-log.service';
@@ -16,12 +17,14 @@ import { DevicesService } from './devices.service';
     DevicesService,
     DevicesRepository,
     DeviceIdentityService,
+    DeviceProfileInferenceService,
     DeviceProvisioningService,
     EnrollmentLogService,
   ],
   exports: [
     DevicesService,
     DeviceIdentityService,
+    DeviceProfileInferenceService,
     DeviceProvisioningService,
     EnrollmentLogService,
   ],

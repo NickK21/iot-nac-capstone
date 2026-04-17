@@ -17,15 +17,11 @@ export class PolicyEngineService {
     action: EnforcementAction,
     context: EnforcementContext,
   ): PolicyEvaluation {
-    if (
-      action === 'allow' &&
-      (context.identityStatus === 'pending' ||
-        context.identityStatus === 'enrolled')
-    ) {
+    if (action === 'allow' && context.identityStatus === 'pending') {
       return {
         allowed: false,
         code: 'identity_not_verified',
-        message: `Allow blocked: device identity is ${context.identityStatus}`,
+        message: 'Allow blocked: device identity is pending',
       };
     }
 

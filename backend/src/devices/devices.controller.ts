@@ -9,11 +9,13 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  Query,
 } from '@nestjs/common';
 import type { Device } from './device.interface';
 import { DeviceIdPipe } from './device-id.pipe';
 import type { DeviceReportDto } from './device-report.dto';
 import { DevicesService } from './devices.service';
+import type { DeviceInventoryView } from './devices.repository';
 
 type SecretBody = {
   secret?: string;
@@ -25,8 +27,30 @@ export class DevicesController {
   constructor(private readonly devicesService: DevicesService) {}
 
   @Get()
-  getDevices(): Device[] {
-    return this.devicesService.listDevices();
+  getDevices(@Query('view') view?: string): Device[] {
+    return this.devicesService.listDevices(this.parseInventoryView(view));
+  }
+
+  @Get('lifecycle')
+  getLifecycle(
+    @Query('deviceId') deviceId?: string,
+    @Query('limit') limit?: string,
+    @Query('before') before?: string,
+  ) {
+    const parsedLimit = Number(limit);
+    const safeLimit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(Math.floor(parsedLimit), 1), 200)
+      : 40;
+
+    if (before?.trim() && Number.isNaN(Date.parse(before))) {
+      throw new BadRequestException('Invalid before timestamp');
+    }
+
+    return this.devicesService.getLifecycleHistory({
+      deviceId: deviceId?.trim() || undefined,
+      limit: safeLimit,
+      beforeTs: before?.trim() || undefined,
+    });
   }
 
   @Post()
@@ -35,8 +59,11 @@ export class DevicesController {
     body: {
       id?: string;
       alias?: string | null;
-      hostname?: string;
-      vendor?: string;
+      hostname?: string | null;
+      vendor?: string | null;
+      model?: string | null;
+      location?: string | null;
+      macAddress?: string | null;
     },
   ): Device {
     const id = body?.id?.trim();
@@ -44,12 +71,29 @@ export class DevicesController {
       throw new BadRequestException('Request body must include a device id');
     }
 
-    return this.devicesService.createPlaceholder({
+    const input = {
       id,
-      alias: this.validateAlias(body.alias),
-      hostname: body.hostname,
-      vendor: body.vendor,
-    });
+      ...(Object.prototype.hasOwnProperty.call(body, 'alias')
+        ? { alias: this.validateAlias(body.alias) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'hostname')
+        ? { hostname: this.validateOptionalText(body.hostname, 'Hostname', 64) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'vendor')
+        ? { vendor: this.validateOptionalText(body.vendor, 'Vendor', 64) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'model')
+        ? { model: this.validateOptionalText(body.model, 'Model', 64) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'location')
+        ? { location: this.validateOptionalText(body.location, 'Location', 80) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'macAddress')
+        ? { macAddress: this.validateMacAddress(body.macAddress) }
+        : {}),
+    };
+
+    return this.devicesService.createPlaceholder(input);
   }
 
   @Post('report')
@@ -71,13 +115,53 @@ export class DevicesController {
       );
     }
 
-    return this.devicesService.reportSignedDeviceHeartbeat(body, {
-      deviceId: headerDeviceId,
-      timestamp: headerTs,
-      nonce: headerNonce,
-      signature: headerSignature,
-      provisioningToken,
-    });
+    return this.devicesService.reportSignedDeviceHeartbeat(
+      {
+        ...body,
+        ...(Object.prototype.hasOwnProperty.call(body, 'hostname')
+          ? {
+              hostname:
+                this.validateOptionalText(body.hostname, 'Hostname', 64) ??
+                undefined,
+            }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'vendor')
+          ? {
+              vendor:
+                this.validateOptionalText(body.vendor, 'Vendor', 64) ??
+                undefined,
+            }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'model')
+          ? {
+              model:
+                this.validateOptionalText(body.model, 'Model', 64) ?? undefined,
+            }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'macAddress')
+          ? {
+              macAddress: this.validateMacAddress(body.macAddress) ?? undefined,
+            }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(body, 'fingerprint')
+          ? {
+              fingerprint:
+                this.validateOptionalText(
+                  body.fingerprint,
+                  'Fingerprint',
+                  96,
+                ) ?? undefined,
+            }
+          : {}),
+      },
+      {
+        deviceId: headerDeviceId,
+        timestamp: headerTs,
+        nonce: headerNonce,
+        signature: headerSignature,
+        provisioningToken,
+      },
+    );
   }
 
   @Get(':id/identity')
@@ -161,6 +245,51 @@ export class DevicesController {
     return this.devicesService.updateAlias(id, this.validateAlias(body.alias));
   }
 
+  @Post(':id/profile')
+  updateDeviceProfile(
+    @Param('id', DeviceIdPipe) id: string,
+    @Body()
+    body: {
+      hostname?: string | null;
+      vendor?: string | null;
+      model?: string | null;
+      location?: string | null;
+      macAddress?: string | null;
+    },
+  ): Device {
+    if (body === undefined) {
+      throw new BadRequestException('Request body must include profile fields');
+    }
+
+    return this.devicesService.updateProfile(id, {
+      ...(Object.prototype.hasOwnProperty.call(body, 'hostname')
+        ? { hostname: this.validateOptionalText(body.hostname, 'Hostname', 64) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'vendor')
+        ? { vendor: this.validateOptionalText(body.vendor, 'Vendor', 64) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'model')
+        ? { model: this.validateOptionalText(body.model, 'Model', 64) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'location')
+        ? { location: this.validateOptionalText(body.location, 'Location', 80) }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(body, 'macAddress')
+        ? { macAddress: this.validateMacAddress(body.macAddress) }
+        : {}),
+    });
+  }
+
+  @Post(':id/archive')
+  archiveDevice(@Param('id', DeviceIdPipe) id: string): Device {
+    return this.devicesService.archiveDevice(id);
+  }
+
+  @Post(':id/restore')
+  restoreDevice(@Param('id', DeviceIdPipe) id: string): Device {
+    return this.devicesService.restoreDevice(id);
+  }
+
   @Get(':id/enforcement')
   getDeviceEnforcementHistory(@Param('id', DeviceIdPipe) id: string) {
     return this.devicesService.getEnforcementHistory(id);
@@ -182,6 +311,18 @@ export class DevicesController {
     if (decision.result === 'blocked') {
       throw new ConflictException(decision.message);
     }
+  }
+
+  private parseInventoryView(value?: string): DeviceInventoryView {
+    if (!value?.trim()) {
+      return 'active';
+    }
+
+    if (value === 'active' || value === 'archived' || value === 'all') {
+      return value;
+    }
+
+    throw new BadRequestException('Invalid device inventory view');
   }
 
   private validateAlias(value?: string | null): string | null | undefined {
@@ -209,5 +350,63 @@ export class DevicesController {
     }
 
     return normalized;
+  }
+
+  private validateOptionalText(
+    value: string | null | undefined,
+    label: string,
+    maxLength: number,
+  ): string | null | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (value === null) {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    if (normalized.length > maxLength) {
+      throw new BadRequestException(
+        `${label} must be ${maxLength} characters or fewer`,
+      );
+    }
+
+    return normalized;
+  }
+
+  private validateMacAddress(
+    value: string | null | undefined,
+  ): string | null | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (value === null) {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const compact = normalized.replace(/[^A-Fa-f0-9]/g, '');
+    if (compact.length !== 12) {
+      throw new BadRequestException(
+        'MAC address must contain 12 hexadecimal characters',
+      );
+    }
+
+    return (
+      compact
+        .match(/.{1,2}/g)
+        ?.join(':')
+        .toUpperCase() ?? normalized.toUpperCase()
+    );
   }
 }

@@ -17,9 +17,18 @@ import { PolicyEngineService } from '../enforcement/policy-engine.service';
 import { EventsService } from '../events/events.service';
 import type { DeviceReportDto } from './device-report.dto';
 import { DeviceIdentityService } from './device-identity.service';
+import { DeviceProfileInferenceService } from './device-profile-inference.service';
 import { DeviceProvisioningService } from './device-provisioning.service';
-import type { Device, DeviceIdentityStatus } from './device.interface';
-import { DevicesRepository } from './devices.repository';
+import type {
+  Device,
+  DeviceIdentityStatus,
+  DeviceProfileSource,
+  DeviceProfileSources,
+} from './device.interface';
+import {
+  type DeviceInventoryView,
+  DevicesRepository,
+} from './devices.repository';
 import { EnrollmentLogService } from './enrollment-log.service';
 
 type SignedDeviceHeaders = {
@@ -33,13 +42,32 @@ type SignedDeviceHeaders = {
 type DevicePlaceholderInput = {
   id: string;
   alias?: string | null;
-  hostname?: string;
-  vendor?: string;
+  hostname?: string | null;
+  vendor?: string | null;
+  model?: string | null;
+  location?: string | null;
+  macAddress?: string | null;
+};
+
+type DeviceProfileUpdateInput = {
+  hostname?: string | null;
+  vendor?: string | null;
+  model?: string | null;
+  location?: string | null;
+  macAddress?: string | null;
 };
 
 type IdentityProfile = {
   deviceId: string;
   alias: string | null;
+  hostname: string;
+  vendor: string;
+  model: string;
+  location: string | null;
+  macAddress: string | null;
+  fingerprint: string | null;
+  archivedAt: string | null;
+  profileSources: DeviceProfileSources;
   identityStatus: Device['identityStatus'];
   lastIdentityCheck: string | null;
   keyConfigured: boolean;
@@ -69,7 +97,14 @@ type IdentityProfile = {
   heartbeat: {
     endpoint: '/devices/report';
     method: 'POST';
-    payloadFields: ['id', 'hostname', 'vendor'];
+    payloadFields: [
+      'id',
+      'hostname',
+      'vendor',
+      'model',
+      'macAddress',
+      'fingerprint',
+    ];
     requiredHeaders: [
       'x-device-id',
       'x-device-ts',
@@ -94,6 +129,15 @@ type IdentityKeyResponse = {
   };
 };
 
+const DEFAULT_PROFILE_SOURCES: DeviceProfileSources = {
+  hostname: 'unknown',
+  vendor: 'unknown',
+  model: 'unknown',
+  location: 'unknown',
+  macAddress: 'unknown',
+  fingerprint: 'unknown',
+};
+
 @Injectable()
 export class DevicesService {
   private readonly logger = new Logger(DevicesService.name);
@@ -104,54 +148,49 @@ export class DevicesService {
     private readonly enforcementLogService: EnforcementLogService,
     private readonly eventsService: EventsService,
     private readonly identityService: DeviceIdentityService,
+    private readonly profileInferenceService: DeviceProfileInferenceService,
     private readonly provisioningService: DeviceProvisioningService,
     private readonly enrollmentLogService: EnrollmentLogService,
     private readonly policyEngine: PolicyEngineService,
     private readonly enforcementService: EnforcementService,
   ) {}
 
-  listDevices(): Device[] {
-    return this.devicesRepository.listDevices();
+  listDevices(view: DeviceInventoryView = 'active'): Device[] {
+    return this.devicesRepository.listDevices(view);
   }
 
   createPlaceholder(input: DevicePlaceholderInput): Device {
     const id = input.id.trim();
     const now = new Date().toISOString();
     const existing = this.devicesRepository.findById(id);
-    const upsertInput: Parameters<DevicesRepository['upsertDevice']>[0] = {
+    const profile = this.buildManualProfileUpdate(existing, {
+      hostname: input.hostname,
+      vendor: input.vendor,
+      model: input.model,
+      location: input.location,
+      macAddress: input.macAddress,
+    });
+
+    const device = this.devicesRepository.upsertDevice({
       id,
+      alias: Object.prototype.hasOwnProperty.call(input, 'alias')
+        ? this.normalizeOptionalText(input.alias)
+        : (existing?.alias ?? null),
+      ...profile,
+      archivedAt: existing?.archivedAt ?? null,
       lastSeen: now,
       state: existing?.state ?? 'unknown',
       identityStatus: existing?.identityStatus ?? 'pending',
       lastIdentityCheck: existing?.lastIdentityCheck ?? null,
-    };
+    });
 
-    if (Object.prototype.hasOwnProperty.call(input, 'alias')) {
-      upsertInput.alias = this.normalizeOptionalText(input.alias);
-    }
-
-    if (Object.prototype.hasOwnProperty.call(input, 'hostname')) {
-      upsertInput.hostname =
-        this.normalizeOptionalText(input.hostname) ?? undefined;
-    }
-
-    if (Object.prototype.hasOwnProperty.call(input, 'vendor')) {
-      upsertInput.vendor =
-        this.normalizeOptionalText(input.vendor) ?? undefined;
-    }
-
-    const device = this.devicesRepository.upsertDevice(upsertInput);
     if (!existing) {
       this.enrollmentLogService.record({
         ts: now,
         deviceId: id,
         action: 'pending_created',
         message: `Pending inventory record created for ${id}`,
-        details: {
-          alias: device.alias ?? null,
-          hostname: device.hostname ?? 'unknown',
-          vendor: device.vendor ?? 'unknown',
-        },
+        details: this.profileDetails(device),
       });
     }
 
@@ -228,6 +267,94 @@ export class DevicesService {
     return updated;
   }
 
+  updateProfile(id: string, input: DeviceProfileUpdateInput): Device {
+    const existing = this.devicesRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    const updated = this.devicesRepository.upsertDevice({
+      id,
+      alias: existing.alias ?? null,
+      ...this.buildManualProfileUpdate(existing, input),
+      archivedAt: existing.archivedAt ?? null,
+      lastSeen: existing.lastSeen,
+      state: existing.state,
+      identityStatus: existing.identityStatus,
+      lastIdentityCheck: existing.lastIdentityCheck ?? null,
+    });
+
+    if (this.profileChanged(existing, updated)) {
+      this.enrollmentLogService.record({
+        ts: new Date().toISOString(),
+        deviceId: id,
+        action: 'profile_updated',
+        message: `Device profile updated for ${id}`,
+        details: this.profileDetails(updated),
+      });
+    }
+
+    return updated;
+  }
+
+  archiveDevice(id: string): Device {
+    const existing = this.devicesRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    if (existing.archivedAt) {
+      return existing;
+    }
+
+    if (existing.state !== 'denied') {
+      this.applyPolicy(id, 'deny');
+    }
+
+    const archivedAt = new Date().toISOString();
+    const updated = this.devicesRepository.setArchivedAt(id, archivedAt);
+    if (!updated) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    this.enrollmentLogService.record({
+      ts: archivedAt,
+      deviceId: id,
+      action: 'device_archived',
+      message: `Device archived from active inventory`,
+      details: { archivedAt },
+    });
+
+    return updated;
+  }
+
+  restoreDevice(id: string): Device {
+    const existing = this.devicesRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    if (!existing.archivedAt) {
+      return existing;
+    }
+
+    const restoredAt = new Date().toISOString();
+    const updated = this.devicesRepository.setArchivedAt(id, null);
+    if (!updated) {
+      throw new NotFoundException(`Device ${id} not found`);
+    }
+
+    this.enrollmentLogService.record({
+      ts: restoredAt,
+      deviceId: id,
+      action: 'device_restored',
+      message: `Device restored to active inventory`,
+      details: { restoredAt },
+    });
+
+    return updated;
+  }
+
   getIdentityProfile(id: string): IdentityProfile {
     const existing = this.devicesRepository.findById(id);
     if (!existing) {
@@ -242,6 +369,14 @@ export class DevicesService {
     return {
       deviceId: id,
       alias: existing.alias ?? null,
+      hostname: existing.hostname ?? 'unknown',
+      vendor: existing.vendor ?? 'unknown',
+      model: existing.model ?? 'unknown',
+      location: existing.location ?? null,
+      macAddress: existing.macAddress ?? null,
+      fingerprint: existing.fingerprint ?? null,
+      archivedAt: existing.archivedAt ?? null,
+      profileSources: existing.profileSources ?? { ...DEFAULT_PROFILE_SOURCES },
       identityStatus: securityState.lockedOut
         ? 'locked'
         : existing.identityStatus,
@@ -255,7 +390,14 @@ export class DevicesService {
       heartbeat: {
         endpoint: '/devices/report',
         method: 'POST',
-        payloadFields: ['id', 'hostname', 'vendor'],
+        payloadFields: [
+          'id',
+          'hostname',
+          'vendor',
+          'model',
+          'macAddress',
+          'fingerprint',
+        ],
         requiredHeaders: [
           'x-device-id',
           'x-device-ts',
@@ -283,6 +425,21 @@ export class DevicesService {
     }
 
     return this.enrollmentLogService.listForDevice(id);
+  }
+
+  getLifecycleHistory(options?: {
+    deviceId?: string;
+    limit?: number;
+    beforeTs?: string;
+  }) {
+    if (options?.deviceId) {
+      const existing = this.devicesRepository.findById(options.deviceId);
+      if (!existing) {
+        throw new NotFoundException(`Device ${options.deviceId} not found`);
+      }
+    }
+
+    return this.enrollmentLogService.listRecent(options);
   }
 
   applyPolicy(id: string, action: EnforcementAction): EnforcementResult {
@@ -423,12 +580,13 @@ export class DevicesService {
       const failedStatus: DeviceIdentityStatus = verified.security.lockedOut
         ? 'locked'
         : 'invalid';
+      const nextProfile = this.buildReportedProfileUpdate(existing, payload);
 
       this.devicesRepository.upsertDevice({
         id: payload.id,
         alias: existing?.alias ?? null,
-        hostname: this.normalizeOptionalText(payload.hostname) ?? undefined,
-        vendor: this.normalizeOptionalText(payload.vendor) ?? undefined,
+        ...nextProfile,
+        archivedAt: existing?.archivedAt ?? null,
         lastSeen: now,
         state: existing?.state ?? 'unknown',
         identityStatus: failedStatus,
@@ -474,8 +632,8 @@ export class DevicesService {
         this.devicesRepository.upsertDevice({
           id: payload.id,
           alias: current.alias ?? null,
-          hostname: this.normalizeOptionalText(payload.hostname) ?? undefined,
-          vendor: this.normalizeOptionalText(payload.vendor) ?? undefined,
+          ...this.buildReportedProfileUpdate(current, payload),
+          archivedAt: current.archivedAt ?? null,
           lastSeen: now,
           state: current.state,
           identityStatus: 'enrolled',
@@ -519,8 +677,8 @@ export class DevicesService {
     const upserted = this.devicesRepository.upsertDevice({
       id: payload.id,
       alias: current?.alias ?? null,
-      hostname: this.normalizeOptionalText(payload.hostname) ?? undefined,
-      vendor: this.normalizeOptionalText(payload.vendor) ?? undefined,
+      ...this.buildReportedProfileUpdate(current, payload),
+      archivedAt: current?.archivedAt ?? null,
       lastSeen: now,
       state: current?.state ?? 'unknown',
       identityStatus: 'verified',
@@ -587,6 +745,12 @@ export class DevicesService {
           : (current?.alias ?? null),
       hostname: current?.hostname,
       vendor: current?.vendor,
+      model: current?.model,
+      location: current?.location ?? null,
+      macAddress: current?.macAddress ?? null,
+      fingerprint: current?.fingerprint ?? null,
+      profileSources: current?.profileSources,
+      archivedAt: current?.archivedAt ?? null,
       lastSeen: now,
       state: current?.state ?? 'unknown',
       identityStatus: 'enrolled',
@@ -652,6 +816,283 @@ export class DevicesService {
     return securityState.lockedOut ? 'locked' : device.identityStatus;
   }
 
+  private buildManualProfileUpdate(
+    existing: Device | undefined,
+    input: DeviceProfileUpdateInput,
+  ) {
+    const currentSources = this.profileSourcesFor(existing);
+
+    const hostname = this.resolveManualNamedField(
+      existing?.hostname,
+      currentSources.hostname,
+      input,
+      'hostname',
+    );
+    const vendor = this.resolveManualNamedField(
+      existing?.vendor,
+      currentSources.vendor,
+      input,
+      'vendor',
+    );
+    const model = this.resolveManualNamedField(
+      existing?.model,
+      currentSources.model,
+      input,
+      'model',
+    );
+    const location = this.resolveManualNullableField(
+      existing?.location ?? null,
+      currentSources.location,
+      input,
+      'location',
+    );
+    const macInput = Object.prototype.hasOwnProperty.call(input, 'macAddress')
+      ? { ...input, macAddress: this.normalizeMacAddress(input.macAddress) }
+      : input;
+    const macAddress = this.resolveManualNullableField(
+      existing?.macAddress ?? null,
+      currentSources.macAddress,
+      macInput,
+      'macAddress',
+    );
+
+    return {
+      hostname: hostname.value,
+      vendor: vendor.value,
+      model: model.value,
+      location: location.value,
+      macAddress: macAddress.value,
+      fingerprint: existing?.fingerprint ?? null,
+      profileSources: {
+        ...currentSources,
+        hostname: hostname.source,
+        vendor: vendor.source,
+        model: model.source,
+        location: location.source,
+        macAddress: macAddress.source,
+      },
+    };
+  }
+
+  private buildReportedProfileUpdate(
+    existing: Device | undefined,
+    payload: DeviceReportDto,
+  ) {
+    const currentSources = this.profileSourcesFor(existing);
+    const normalized = {
+      hostname: this.normalizeOptionalText(payload.hostname),
+      vendor: this.normalizeOptionalText(payload.vendor),
+      model: this.normalizeOptionalText(payload.model),
+      macAddress: this.normalizeMacAddress(payload.macAddress),
+      fingerprint: this.normalizeOptionalText(payload.fingerprint),
+    };
+    const inferred = this.profileInferenceService.infer({
+      hostname: normalized.hostname,
+      vendor: normalized.vendor,
+      model: normalized.model,
+      macAddress: normalized.macAddress,
+      fingerprint: normalized.fingerprint,
+    });
+
+    const hostname = this.resolveReportedNamedField(
+      existing?.hostname,
+      currentSources.hostname,
+      normalized.hostname,
+    );
+    const vendorFromReport = this.resolveReportedNamedField(
+      existing?.vendor,
+      currentSources.vendor,
+      normalized.vendor,
+    );
+    const modelFromReport = this.resolveReportedNamedField(
+      existing?.model,
+      currentSources.model,
+      normalized.model,
+    );
+    const macAddress = this.resolveReportedNullableField(
+      existing?.macAddress ?? null,
+      currentSources.macAddress,
+      normalized.macAddress,
+    );
+    const fingerprint = this.resolveReportedNullableField(
+      existing?.fingerprint ?? null,
+      currentSources.fingerprint,
+      normalized.fingerprint,
+    );
+
+    const vendor = this.resolveInferredNamedField(
+      vendorFromReport.value,
+      vendorFromReport.source,
+      inferred.vendor ?? null,
+    );
+    const model = this.resolveInferredNamedField(
+      modelFromReport.value,
+      modelFromReport.source,
+      inferred.model ?? null,
+    );
+
+    return {
+      hostname: hostname.value,
+      vendor: vendor.value,
+      model: model.value,
+      location: existing?.location ?? null,
+      macAddress: macAddress.value,
+      fingerprint: fingerprint.value,
+      profileSources: {
+        ...currentSources,
+        hostname: hostname.source,
+        vendor: vendor.source,
+        model: model.source,
+        location: currentSources.location,
+        macAddress: macAddress.source,
+        fingerprint: fingerprint.source,
+      },
+    };
+  }
+
+  private resolveManualNamedField(
+    currentValue: string | undefined,
+    currentSource: DeviceProfileSource,
+    input: DeviceProfileUpdateInput,
+    field: 'hostname' | 'vendor' | 'model',
+  ): { value: string; source: DeviceProfileSource } {
+    if (!Object.prototype.hasOwnProperty.call(input, field)) {
+      return {
+        value: currentValue ?? 'unknown',
+        source: currentSource,
+      };
+    }
+
+    const normalized = this.normalizeOptionalText(input[field]);
+    return {
+      value: normalized ?? 'unknown',
+      source: normalized ? 'manual' : 'unknown',
+    };
+  }
+
+  private resolveManualNullableField(
+    currentValue: string | null,
+    currentSource: DeviceProfileSource,
+    input: DeviceProfileUpdateInput & { macAddress?: string | null },
+    field: 'location' | 'macAddress',
+  ): { value: string | null; source: DeviceProfileSource } {
+    if (!Object.prototype.hasOwnProperty.call(input, field)) {
+      return {
+        value: currentValue,
+        source: currentSource,
+      };
+    }
+
+    const normalized =
+      field === 'macAddress'
+        ? this.normalizeMacAddress(input[field])
+        : this.normalizeOptionalText(input[field]);
+    return {
+      value: normalized ?? null,
+      source: normalized ? 'manual' : 'unknown',
+    };
+  }
+
+  private resolveReportedNamedField(
+    currentValue: string | undefined,
+    currentSource: DeviceProfileSource,
+    reportedValue: string | null,
+  ): { value: string; source: DeviceProfileSource } {
+    if (currentSource === 'manual') {
+      return {
+        value: currentValue ?? 'unknown',
+        source: currentSource,
+      };
+    }
+
+    if (reportedValue) {
+      return {
+        value: reportedValue,
+        source: 'report' as const,
+      };
+    }
+
+    return {
+      value: currentValue ?? 'unknown',
+      source: currentSource,
+    };
+  }
+
+  private resolveInferredNamedField(
+    currentValue: string | undefined,
+    currentSource: DeviceProfileSource,
+    inferredValue: string | null,
+  ): { value: string; source: DeviceProfileSource } {
+    if (currentSource === 'manual' || currentSource === 'report') {
+      return {
+        value: currentValue ?? 'unknown',
+        source: currentSource,
+      };
+    }
+
+    if (inferredValue) {
+      return {
+        value: inferredValue,
+        source: 'inferred' as const,
+      };
+    }
+
+    return {
+      value: currentValue ?? 'unknown',
+      source: currentSource,
+    };
+  }
+
+  private resolveReportedNullableField(
+    currentValue: string | null,
+    currentSource: DeviceProfileSource,
+    reportedValue: string | null,
+  ): { value: string | null; source: DeviceProfileSource } {
+    if (currentSource === 'manual') {
+      return {
+        value: currentValue,
+        source: currentSource,
+      };
+    }
+
+    if (reportedValue) {
+      return {
+        value: reportedValue,
+        source: 'report' as const,
+      };
+    }
+
+    return {
+      value: currentValue,
+      source: currentSource,
+    };
+  }
+
+  private profileSourcesFor(existing?: Device): DeviceProfileSources {
+    return existing?.profileSources ?? { ...DEFAULT_PROFILE_SOURCES };
+  }
+
+  private profileDetails(device: Device) {
+    return {
+      alias: device.alias ?? null,
+      hostname: device.hostname ?? 'unknown',
+      vendor: device.vendor ?? 'unknown',
+      model: device.model ?? 'unknown',
+      location: device.location ?? null,
+      macAddress: device.macAddress ?? null,
+      fingerprint: device.fingerprint ?? null,
+      archivedAt: device.archivedAt ?? null,
+      profileSources: device.profileSources ?? { ...DEFAULT_PROFILE_SOURCES },
+    };
+  }
+
+  private profileChanged(previous: Device, next: Device): boolean {
+    return (
+      JSON.stringify(this.profileDetails(previous)) !==
+      JSON.stringify(this.profileDetails(next))
+    );
+  }
+
   private normalizeOptionalText(value?: string | null): string | null {
     if (value === undefined || value === null) {
       return null;
@@ -659,5 +1100,19 @@ export class DevicesService {
 
     const normalized = value.trim();
     return normalized ? normalized : null;
+  }
+
+  private normalizeMacAddress(value?: string | null): string | null {
+    const normalized = this.normalizeOptionalText(value);
+    if (!normalized) {
+      return null;
+    }
+
+    const compact = normalized.replace(/[^A-Fa-f0-9]/g, '').toUpperCase();
+    if (compact.length !== 12) {
+      return normalized.toUpperCase();
+    }
+
+    return compact.match(/.{1,2}/g)?.join(':') ?? normalized.toUpperCase();
   }
 }

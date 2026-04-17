@@ -6,8 +6,11 @@ export type EnrollmentAction =
   | 'device_enrolled'
   | 'key_rotated'
   | 'alias_updated'
+  | 'profile_updated'
   | 'provisioning_token_issued'
-  | 'provisioning_token_consumed';
+  | 'provisioning_token_consumed'
+  | 'device_archived'
+  | 'device_restored';
 
 export type EnrollmentLogEntry = {
   ts: string;
@@ -47,18 +50,44 @@ export class EnrollmentLogService {
   }
 
   listForDevice(deviceId: string, limit = 40) {
+    const rows = this.listRecent({ deviceId, limit });
+
+    return rows;
+  }
+
+  listRecent(options?: {
+    deviceId?: string;
+    limit?: number;
+    beforeTs?: string;
+  }) {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (options?.deviceId) {
+      clauses.push('device_id = ?');
+      params.push(options.deviceId);
+    }
+
+    if (options?.beforeTs) {
+      clauses.push('ts < ?');
+      params.push(options.beforeTs);
+    }
+
+    const safeLimit = Math.min(Math.max(options?.limit ?? 40, 1), 200);
+    const whereClause =
+      clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = (
       this.sqlite.db
         .prepare(
           `
           SELECT ts, device_id, action, message, details_json
           FROM enrollment_logs
-          WHERE device_id = ?
+          ${whereClause}
           ORDER BY ts DESC, id DESC
           LIMIT ?
         `,
         )
-        .all(deviceId, limit) as EnrollmentLogRow[]
+        .all(...params, safeLimit) as EnrollmentLogRow[]
     ).reverse();
 
     return rows.map((row) => ({

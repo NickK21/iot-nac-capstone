@@ -68,6 +68,13 @@ export class ExportsService {
           a.ts as ts,
           a.device_id as device_id,
           d.alias as alias,
+          d.hostname as hostname,
+          d.vendor as vendor,
+          d.model as model,
+          d.location as location,
+          d.mac_address as mac_address,
+          d.fingerprint as fingerprint,
+          d.archived_at as archived_at,
           a.action as action,
           a.prev_state as prev_state,
           a.next_state as next_state
@@ -81,6 +88,13 @@ export class ExportsService {
       ts: string;
       device_id: string;
       alias: string | null;
+      hostname: string;
+      vendor: string;
+      model: string;
+      location: string | null;
+      mac_address: string | null;
+      fingerprint: string | null;
+      archived_at: string | null;
       action: string;
       prev_state: string;
       next_state: string;
@@ -90,6 +104,13 @@ export class ExportsService {
       ts: row.ts,
       deviceId: row.device_id,
       alias: row.alias,
+      hostname: row.hostname,
+      vendor: row.vendor,
+      model: row.model,
+      location: row.location,
+      macAddress: row.mac_address,
+      fingerprint: row.fingerprint,
+      archivedAt: row.archived_at,
       action: row.action,
       prevState: row.prev_state,
       nextState: row.next_state,
@@ -112,6 +133,13 @@ export class ExportsService {
           e.ts as ts,
           e.device_id as device_id,
           d.alias as alias,
+          d.hostname as hostname,
+          d.vendor as vendor,
+          d.model as model,
+          d.location as location,
+          d.mac_address as mac_address,
+          d.fingerprint as fingerprint,
+          d.archived_at as archived_at,
           e.action as action,
           e.prev_state as prev_state,
           e.next_state as next_state,
@@ -129,6 +157,13 @@ export class ExportsService {
       ts: string;
       device_id: string;
       alias: string | null;
+      hostname: string;
+      vendor: string;
+      model: string;
+      location: string | null;
+      mac_address: string | null;
+      fingerprint: string | null;
+      archived_at: string | null;
       action: string;
       prev_state: string;
       next_state: string;
@@ -142,6 +177,13 @@ export class ExportsService {
       ts: row.ts,
       deviceId: row.device_id,
       alias: row.alias,
+      hostname: row.hostname,
+      vendor: row.vendor,
+      model: row.model,
+      location: row.location,
+      macAddress: row.mac_address,
+      fingerprint: row.fingerprint,
+      archivedAt: row.archived_at,
       action: row.action,
       prevState: row.prev_state,
       nextState: row.next_state,
@@ -172,6 +214,13 @@ export class ExportsService {
           e.severity as severity,
           e.device_id as device_id,
           d.alias as alias,
+          d.hostname as hostname,
+          d.vendor as vendor,
+          d.model as model,
+          d.location as location,
+          d.mac_address as mac_address,
+          d.fingerprint as fingerprint,
+          d.archived_at as archived_at,
           e.message as message,
           e.details_json as details_json
         FROM event_logs e
@@ -186,6 +235,13 @@ export class ExportsService {
       severity: string;
       device_id: string | null;
       alias: string | null;
+      hostname: string | null;
+      vendor: string | null;
+      model: string | null;
+      location: string | null;
+      mac_address: string | null;
+      fingerprint: string | null;
+      archived_at: string | null;
       message: string;
       details_json: string | null;
     }>;
@@ -196,6 +252,13 @@ export class ExportsService {
       severity: row.severity,
       deviceId: row.device_id,
       alias: row.alias,
+      hostname: row.hostname,
+      vendor: row.vendor,
+      model: row.model,
+      location: row.location,
+      macAddress: row.mac_address,
+      fingerprint: row.fingerprint,
+      archivedAt: row.archived_at,
       message: row.message,
       details: this.parseJson(row.details_json),
     }));
